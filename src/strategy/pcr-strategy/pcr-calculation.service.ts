@@ -240,6 +240,7 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     const fut = await this.instruments.findNearestFuture(
       cfg.pcrExchange,
       cfg.contractName,
+      cfg.pcrExpiry, // notBefore: don't pick a future that expires before the PCR expiry
     );
     return fut ? { exchange: fut.exchange, token: fut.token } : null;
   }

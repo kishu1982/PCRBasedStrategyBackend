@@ -9,12 +9,14 @@ import { PcrCalculationService } from './pcr-calculation.service';
 import { PcrExecutionService } from './pcr-execution.service';
 import { OrdersModule } from 'src/orders/orders.module'; // adjust; must export OrdersService
 import { ExchangeDataModule } from '../exchange-data/exchange-data.module';
+import { MarketModule } from '@/market/market.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([PcrStrategyConfigEntity]),
     OrdersModule,
     ExchangeDataModule,
+    MarketModule,
   ],
   controllers: [PcrStrategyController],
   providers: [

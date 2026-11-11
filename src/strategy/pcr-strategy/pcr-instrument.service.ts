@@ -118,9 +118,34 @@ export class PcrInstrumentService {
     return hit;
   }
 
+  // async findNearestFuture(
+  //   exchange: string,
+  //   symbol: string,
+  // ): Promise<PcrInstrument | null> {
+  //   await this.ensureLoaded();
+  //   const now = new Date();
+  //   const today = Date.UTC(
+  //     now.getUTCFullYear(),
+  //     now.getUTCMonth(),
+  //     now.getUTCDate(),
+  //   );
+  //   const E = exchange.toUpperCase();
+  //   const S = symbol.toUpperCase();
+  //   const futs = this.rows
+  //     .filter(
+  //       (r) =>
+  //         r.exchange === E &&
+  //         r.symbol === S &&
+  //         r.instrument.startsWith('FUT') &&
+  //         parseExpiry(r.expiry) >= today,
+  //     )
+  //     .sort((a, b) => parseExpiry(a.expiry) - parseExpiry(b.expiry));
+  //   return futs[0] ?? null;
+  // }
   async findNearestFuture(
     exchange: string,
     symbol: string,
+    notBefore?: string, // option expiry, e.g. '25-NOV-2026'
   ): Promise<PcrInstrument | null> {
     await this.ensureLoaded();
     const now = new Date();
@@ -129,6 +154,7 @@ export class PcrInstrumentService {
       now.getUTCMonth(),
       now.getUTCDate(),
     );
+    const minTs = notBefore ? Math.max(today, parseExpiry(notBefore)) : today;
     const E = exchange.toUpperCase();
     const S = symbol.toUpperCase();
     const futs = this.rows
@@ -137,7 +163,7 @@ export class PcrInstrumentService {
           r.exchange === E &&
           r.symbol === S &&
           r.instrument.startsWith('FUT') &&
-          parseExpiry(r.expiry) >= today,
+          parseExpiry(r.expiry) >= minTs,
       )
       .sort((a, b) => parseExpiry(a.expiry) - parseExpiry(b.expiry));
     return futs[0] ?? null;

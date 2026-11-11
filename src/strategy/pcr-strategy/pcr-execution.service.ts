@@ -10,6 +10,7 @@ import { PlaceOrderDto } from 'src/orders/dto/place-order.dto'; // adjust
 import { PcrStrategyConfigService } from './pcr-strategy-config.service';
 import { PcrCalculationService } from './pcr-calculation.service';
 import { PcrStrategyConfigEntity } from './entities/pcr-strategy-config.entity';
+import { MarketService } from 'src/market/market.service';
 
 /*
 Every 5s: reads the snapshot, compares with live positions, plans and places orders, and records the result
@@ -17,6 +18,7 @@ Every 5s: reads the snapshot, compares with live positions, plans and places ord
 
 export interface PlannedOrder {
   exchange: string;
+  token: string; // for plending order price required
   tradingSymbol: string;
   side: 'B' | 'S';
   quantity: number; // units = lots * lotSize
@@ -42,6 +44,8 @@ const SESSIONS: Record<string, [number, number]> = {
 };
 const IST_MS = 330 * 60 * 1000;
 
+const LIMIT_BUFFER = 0.001; // 0.1% beyond best price so the LMT order still fills
+
 @Injectable()
 export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PcrExecutionService.name);
@@ -54,6 +58,7 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
     private readonly calc: PcrCalculationService,
     private readonly orders: OrdersService,
     private readonly env: ConfigService,
+    private readonly market: MarketService,
   ) {}
 
   onModuleInit() {
@@ -118,6 +123,35 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** LMT price: BUY = best ask +0.1%, SELL = best bid -0.1%, rounded to tick. Falls back to LTP. */
+  private async getLimitPrice(
+    exchange: string,
+    token: string,
+    side: 'B' | 'S',
+  ): Promise<number | null> {
+    try {
+      const q: any = await this.market.getQuotes({ exch: exchange, token });
+      if (!q || q.stat !== 'Ok') return null;
+
+      const ref = Number(side === 'B' ? q.sp1 : q.bp1);
+      const base = ref > 0 ? ref : Number(q.lp);
+      if (!(base > 0)) return null;
+
+      const tick = Number(this.env.get('PCR_TICK_SIZE') ?? 0.05);
+      const raw =
+        side === 'B' ? base * (1 + LIMIT_BUFFER) : base * (1 - LIMIT_BUFFER);
+      // round in the safe direction: buy rounds up, sell rounds down
+      const steps =
+        side === 'B'
+          ? Math.ceil(raw / tick - 1e-6)
+          : Math.floor(raw / tick + 1e-6);
+      const price = Math.round(steps * tick * 100) / 100;
+      return price >= tick ? price : null;
+    } catch (e: any) {
+      this.logger.error(`PCR getLimitPrice failed: ${e?.message}`);
+      return null;
+    }
+  }
   private async rebalance(
     c: PcrStrategyConfigEntity,
   ): Promise<PcrExecutionResult> {
@@ -141,8 +175,14 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
     if (!snap.contractToTrade)
       return skip(snap.contractReason ?? 'No contract to trade');
 
-    // const live = await this.calc.fetchNetPositions();
-    // if (!live.ok) return skip('Net positions unavailable'); // never assume "flat" on an API failure
+    const executionEnabled = this.env.get('PCR_EXECUTION_ENABLED') === 'true';
+
+    // cancel our own pending LMT orders first, so an unfilled order is not placed twice
+    if (executionEnabled) {
+      if (!(await this.cancelPendingPcrOrders(c)))
+        return skip('Could not check pending orders');
+    }
+
     const live = await this.calc.fetchNetPositions(true); // syncs trade book right now, then reads filtered trades
     if (!live.ok) return skip('Net positions unavailable');
 
@@ -152,10 +192,6 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       .filter((p) => p.netQty !== 0);
 
     const target = snap.contractToTrade;
-    // const dir = c.side === 'BUY' ? 1 : -1;
-    // const isOpt = c.tradeInstrumentType.startsWith('OPT');
-    // const openSide: 'B' | 'S' = c.side === 'BUY' ? 'B' : 'S';
-    // const closeSide: 'B' | 'S' = openSide === 'B' ? 'S' : 'B';
     const isOpt = c.tradeInstrumentType.startsWith('OPT');
     // options: config side. futures: PCR decides, config side is ignored
     const effSide: 'BUY' | 'SELL' = isOpt
@@ -180,6 +216,7 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       if (wrongDir || wrongType) {
         plan.push({
           exchange: p.exchange,
+          token: p.token,
           tradingSymbol: p.tradingSymbol,
           side: p.netQty > 0 ? 'S' : 'B',
           quantity: Math.abs(p.netQty),
@@ -209,6 +246,7 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       // add at the snapshot contract
       plan.push({
         exchange: target.exchange,
+        token: target.token,
         tradingSymbol: target.tradingSymbol,
         side: openSide,
         quantity: diff * lotSize,
@@ -226,6 +264,7 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
         const cut = Math.min(lots, toCut);
         plan.push({
           exchange: p.exchange,
+          token: p.token,
           tradingSymbol: p.tradingSymbol,
           side: closeSide,
           quantity: cut * p.lotSize,
@@ -252,27 +291,38 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (this.env.get('PCR_EXECUTION_ENABLED') !== 'true') {
+    if (!executionEnabled) {
       this.logger.log(`PCR ${c.contractName} DRY RUN: ${JSON.stringify(plan)}`);
       this.calc.recordExecution(id, { ...info, status: 'DRY_RUN' });
       return { status: 'DRY_RUN' as const, orders: plan };
     }
 
-    // 3) place orders sequentially; stop on first failure (e.g. don't open if close failed)
+    // 3) place LMT orders sequentially; stop on first failure (e.g. don't open if close failed)
     const results: any[] = [];
     for (const o of plan) {
       try {
-        const r = await this.orders.placeOrder({
+        const price = await this.getLimitPrice(o.exchange, o.token, o.side);
+        if (price == null) throw new Error('Limit price unavailable');
+
+        const r: any = await this.orders.placeOrder({
           buy_or_sell: o.side,
           product_type: c.productType ?? 'M',
           exchange: o.exchange,
           tradingsymbol: o.tradingSymbol,
           quantity: o.quantity,
-          price_type: 'MKT',
+          price_type: 'LMT',
+          price,
+          trigger_price: 0,
+          discloseqty: 0,
           retention: 'DAY',
+          amo: 'NO',
           remarks: `PCR_${c.contractName}`,
         } as PlaceOrderDto);
-        results.push({ ...o, ok: true, orderNo: r?.norenordno });
+
+        // a rejected order may not throw, so check the response
+        if (!r || r.stat !== 'Ok') throw new Error(r?.emsg ?? 'Order rejected');
+
+        results.push({ ...o, price, ok: true, orderNo: r?.norenordno });
       } catch (e: any) {
         results.push({ ...o, ok: false, error: e?.message });
         this.logger.error(`PCR order failed ${o.tradingSymbol}: ${e?.message}`);
@@ -282,5 +332,28 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
     }
     this.calc.recordExecution(id, { ...info, status: 'EXECUTED', results });
     return { status: 'EXECUTED' as const, orders: results };
+  }
+
+  private async cancelPendingPcrOrders(
+    c: PcrStrategyConfigEntity,
+  ): Promise<boolean> {
+    try {
+      const res: any = await this.orders.getOrderBook();
+      if (res?.status !== 'OK') return false;
+      const pending = (Array.isArray(res.trades) ? res.trades : []).filter(
+        (o: any) =>
+          String(o.remarks || '').includes(`PCR_${c.contractName}`) &&
+          ['OPEN', 'PENDING', 'TRIGGER_PENDING'].includes(o.status),
+      );
+      for (const o of pending) {
+        await this.orders.cancelOrder(o.norenordno);
+        this.logger.warn(`PCR cancelled pending order ${o.norenordno}`);
+      }
+      if (pending.length) await new Promise((r) => setTimeout(r, 500));
+      return true;
+    } catch (e: any) {
+      this.logger.error(`PCR cancel pending failed: ${e?.message}`);
+      return false;
+    }
   }
 }
