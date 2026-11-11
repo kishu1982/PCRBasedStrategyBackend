@@ -152,9 +152,19 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       .filter((p) => p.netQty !== 0);
 
     const target = snap.contractToTrade;
-    const dir = c.side === 'BUY' ? 1 : -1;
+    // const dir = c.side === 'BUY' ? 1 : -1;
+    // const isOpt = c.tradeInstrumentType.startsWith('OPT');
+    // const openSide: 'B' | 'S' = c.side === 'BUY' ? 'B' : 'S';
+    // const closeSide: 'B' | 'S' = openSide === 'B' ? 'S' : 'B';
     const isOpt = c.tradeInstrumentType.startsWith('OPT');
-    const openSide: 'B' | 'S' = c.side === 'BUY' ? 'B' : 'S';
+    // options: config side. futures: PCR decides, config side is ignored
+    const effSide: 'BUY' | 'SELL' = isOpt
+      ? (c.side as 'BUY' | 'SELL')
+      : snap.pcr >= 1
+        ? 'BUY'
+        : 'SELL';
+    const dir = effSide === 'BUY' ? 1 : -1;
+    const openSide: 'B' | 'S' = effSide === 'BUY' ? 'B' : 'S';
     const closeSide: 'B' | 'S' = openSide === 'B' ? 'S' : 'B';
     const lotSize = target.lotSize || 1;
     const isTargetRow = (p: { exchange: string; token: string }) =>
@@ -223,18 +233,6 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
         });
         toCut -= cut;
       }
-    }
-
-    if (diff !== 0) {
-      const openSide: 'B' | 'S' = c.side === 'BUY' ? 'B' : 'S';
-      const closeSide: 'B' | 'S' = openSide === 'B' ? 'S' : 'B';
-      plan.push({
-        exchange: target.exchange,
-        tradingSymbol: target.tradingSymbol,
-        side: diff > 0 ? openSide : closeSide,
-        quantity: Math.abs(diff) * lotSize,
-        reason: diff > 0 ? `add ${diff} lots` : `reduce ${Math.abs(diff)} lots`,
-      });
     }
 
     const info: any = {

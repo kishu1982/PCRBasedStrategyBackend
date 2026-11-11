@@ -297,7 +297,17 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     if (pick.contract) nextRequired.add(keyOf(pick.contract));
 
     // to get option total postions
-    const dirSign = cfg.side === 'BUY' ? 1 : -1;
+    // const dirSign = cfg.side === 'BUY' ? 1 : -1;
+    // to get option total postions
+    const isOpt = cfg.tradeInstrumentType.startsWith('OPT');
+    // options: config side. futures: PCR decides
+    const dirSign = isOpt
+      ? cfg.side === 'BUY'
+        ? 1
+        : -1
+      : pcr != null && pcr >= 1
+        ? 1
+        : -1;
     const totalOpenLots = openPositions
       .filter(
         (p) =>
@@ -316,7 +326,8 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
       pcrExchange: cfg.pcrExchange,
       pcrExpiry: cfg.pcrExpiry,
       strategyActive: cfg.status === 'ACTIVE',
-      side: cfg.side,
+      // side: cfg.side,
+      side: isOpt ? cfg.side : pcr != null && pcr >= 1 ? 'BUY' : 'SELL',
       timeframeMinutes: cfg.timeframeMinutes,
       underlying: und ? { ...und, ltp: undLtp } : null,
       totalCallOi: callOi,
@@ -365,7 +376,10 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     if (pcr == null)
       return { contract: null, optType: null, reason: 'PCR not available yet' };
 
-    const optType = pcr >= 1 ? 'CE' : 'PE';
+    // const optType = pcr >= 1 ? 'CE' : 'PE';
+    const isBuy = cfg.side === 'BUY';
+    // BUY : pcr>=1 → CE, else PE   |   SELL: pcr>=1 → PE, else CE
+    const optType = pcr >= 1 === isBuy ? 'CE' : 'PE';
 
     // sticky strike: if a position already exists on this option side, keep trading that strike
     // const held = open.find((p) => p.optType === optType);
