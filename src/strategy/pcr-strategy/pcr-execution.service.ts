@@ -183,7 +183,8 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
         return skip('Could not check pending orders');
     }
 
-    const live = await this.calc.fetchNetPositions(true); // syncs trade book right now, then reads filtered trades
+    const live = await this.calc.fetchNetPositions(); // live from broker
+    // const live = await this.calc.fetchNetPositions(true); // syncs trade book right now, then reads filtered trades
     if (!live.ok) return skip('Net positions unavailable');
 
     const universe = await this.calc.getTradeUniverse(c);

@@ -112,56 +112,98 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
   /* ---------- positions ---------- */
 
   /** Net positions from MAGIC-tagged trades whose remarks also contain 'PCR_' (our own orders only). */
-  async fetchNetPositions(
-    fresh = false,
-  ): Promise<{ ok: boolean; rows: PcrNetRow[] }> {
-    if (fresh) await this.exchangeData.forceSyncFromWebsocket(true);
+  // async fetchNetPositions(
+  //   fresh = false,
+  // ): Promise<{ ok: boolean; rows: PcrNetRow[] }> {
+  //   if (fresh) await this.exchangeData.forceSyncFromWebsocket(true);
 
-    const map = new Map<string, any>();
-    for (const t of this.exchangeData.getFilteredTrades()) {
-      const r = t.raw || t;
-      if (!String(r.remarks || '').includes('PCR_')) continue;
+  //   const map = new Map<string, any>();
+  //   for (const t of this.exchangeData.getFilteredTrades()) {
+  //     const r = t.raw || t;
+  //     if (!String(r.remarks || '').includes('PCR_')) continue;
 
-      const key = `${r.exch}|${r.token}`;
-      const qty = Number(r.flqty ?? r.qty ?? 0);
-      const prc = Number(r.flprc ?? r.avgprc ?? r.prc ?? 0);
-      const cur = map.get(key) ?? {
-        exch: r.exch,
-        token: String(r.token),
-        tsym: r.tsym,
-        buyQty: 0,
-        sellQty: 0,
-        buyAmt: 0,
-        sellAmt: 0,
-      };
-      if (r.trantype === 'B') {
-        cur.buyQty += qty;
-        cur.buyAmt += qty * prc;
-      } else if (r.trantype === 'S') {
-        cur.sellQty += qty;
-        cur.sellAmt += qty * prc;
+  //     const key = `${r.exch}|${r.token}`;
+  //     const qty = Number(r.flqty ?? r.qty ?? 0);
+  //     const prc = Number(r.flprc ?? r.avgprc ?? r.prc ?? 0);
+  //     const cur = map.get(key) ?? {
+  //       exch: r.exch,
+  //       token: String(r.token),
+  //       tsym: r.tsym,
+  //       buyQty: 0,
+  //       sellQty: 0,
+  //       buyAmt: 0,
+  //       sellAmt: 0,
+  //     };
+  //     if (r.trantype === 'B') {
+  //       cur.buyQty += qty;
+  //       cur.buyAmt += qty * prc;
+  //     } else if (r.trantype === 'S') {
+  //       cur.sellQty += qty;
+  //       cur.sellAmt += qty * prc;
+  //     }
+  //     map.set(key, cur);
+  //   }
+
+  //   const rows: PcrNetRow[] = [...map.values()].map((c) => {
+  //     const netQty = c.buyQty - c.sellQty;
+  //     const avgPrice =
+  //       netQty > 0
+  //         ? c.buyAmt / c.buyQty
+  //         : netQty < 0
+  //           ? c.sellAmt / c.sellQty
+  //           : 0;
+  //     return {
+  //       exch: c.exch,
+  //       token: c.token,
+  //       tsym: c.tsym,
+  //       netQty,
+  //       avgPrice,
+  //       cashflow: c.sellAmt - c.buyAmt,
+  //     };
+  //   });
+  //   return { ok: true, rows };
+  // }
+  /** Net positions straight from the broker (includes carried-forward positions, no remarks/magic filter). */
+  async fetchNetPositions(): Promise<{ ok: boolean; rows: PcrNetRow[] }> {
+    try {
+      const res: any = await this.orders.getNetPositions();
+
+      if (!res?.success) {
+        // some brokers answer "no data" for a flat account; treat that as empty, anything else as a failure
+        const msg = String(res?.message ?? res?.emsg ?? '').toLowerCase();
+        if (msg.includes('no data')) return { ok: true, rows: [] };
+        return { ok: false, rows: [] }; // never assume "flat" on an API failure
       }
-      map.set(key, cur);
-    }
 
-    const rows: PcrNetRow[] = [...map.values()].map((c) => {
-      const netQty = c.buyQty - c.sellQty;
-      const avgPrice =
-        netQty > 0
-          ? c.buyAmt / c.buyQty
-          : netQty < 0
-            ? c.sellAmt / c.sellQty
-            : 0;
-      return {
-        exch: c.exch,
-        token: c.token,
-        tsym: c.tsym,
-        netQty,
-        avgPrice,
-        cashflow: c.sellAmt - c.buyAmt,
-      };
-    });
-    return { ok: true, rows };
+      const map = new Map<string, PcrNetRow>();
+      for (const p of Array.isArray(res.data) ? res.data : []) {
+        const netQty = Number(p.netqty || 0);
+        const cashflow =
+          Number(p.totsellamt ?? p.daysellamt ?? 0) -
+          Number(p.totbuyamt ?? p.daybuyamt ?? 0);
+        const key = `${p.exch}|${p.token}`;
+        const cur = map.get(key);
+        if (cur) {
+          // same contract under different product types: add them up
+          if (cur.netQty === 0) cur.avgPrice = Number(p.netavgprc || 0);
+          cur.netQty += netQty;
+          cur.cashflow += cashflow;
+        } else {
+          map.set(key, {
+            exch: p.exch,
+            token: String(p.token),
+            tsym: p.tsym,
+            netQty,
+            avgPrice: Number(p.netavgprc || 0),
+            cashflow,
+          });
+        }
+      }
+      return { ok: true, rows: [...map.values()] };
+    } catch (e: any) {
+      this.logger.error(`Broker net positions failed: ${e?.message}`);
+      return { ok: false, rows: [] };
+    }
   }
 
   async getTradeUniverse(
