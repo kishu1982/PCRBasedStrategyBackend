@@ -1,4 +1,4 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsIn,
   IsInt,
@@ -37,7 +37,9 @@ export class CreatePcrStrategyConfigDto {
   @IsInt() @Min(1) lotsPerTrade: number;
 
   @IsOptional() @Transform(upper) @IsIn(['ACTIVE', 'INACTIVE']) status?: string;
-  @IsOptional() @IsNumber() @Min(0) pcrStartLevel?: number;
+  // @IsOptional() @IsNumber() @Min(0) pcrStartLevel?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() pcrBullishStartLevel?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() pcrBearishStartLevel?: number;
   @Transform(upper) @IsIn(['BUY', 'SELL']) side: string;
 
   @IsOptional() @IsNumber() @Min(0.01) pcrStep?: number;
@@ -47,4 +49,16 @@ export class CreatePcrStrategyConfigDto {
   @IsIn(['NSE', 'BSE', 'NFO', 'BFO', 'MCX'])
   underlyingExchange?: string;
   @IsOptional() @IsString() underlyingToken?: string;
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === undefined || value === null || value === ''
+      ? undefined
+      : String(value).toLowerCase() === 'all'
+        ? 0
+        : Number(value),
+  )
+  @IsInt()
+  @Min(0)
+  strikesAroundAtm?: number;
 }

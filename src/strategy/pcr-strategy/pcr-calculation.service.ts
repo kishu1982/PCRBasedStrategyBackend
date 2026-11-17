@@ -27,9 +27,38 @@ interface PcrNetRow {
   cashflow: number; // sell amount - buy amount
 }
 
+// export function computeLots(
+//   pcr: number | null,
+//   start: number,
+//   step: number,
+//   lotsPerTrade: number,
+// ) {
+//   if (pcr == null)
+//     return {
+//       direction: 'NA' as const,
+//       pcrLots: 0,
+//       lotsPerTrade,
+//       targetLots: 0,
+//     };
+//   const diff = pcr >= start ? pcr - start : start - pcr;
+//   // toFixed guards float error: (1.2 - 1) / 0.1 = 1.9999999 would floor to 1
+//   const pcrLots = Math.floor(Number((diff / step).toFixed(6)));
+//   return {
+//     direction:
+//       pcr > start
+//         ? ('ABOVE' as const)
+//         : pcr < start
+//           ? ('BELOW' as const)
+//           : ('AT' as const),
+//     pcrLots,
+//     lotsPerTrade,
+//     targetLots: pcrLots * lotsPerTrade,
+//   };
+// }
 export function computeLots(
   pcr: number | null,
-  start: number,
+  bearish: number,
+  bullish: number,
   step: number,
   lotsPerTrade: number,
 ) {
@@ -40,16 +69,19 @@ export function computeLots(
       lotsPerTrade,
       targetLots: 0,
     };
-  const diff = pcr >= start ? pcr - start : start - pcr;
-  // toFixed guards float error: (1.2 - 1) / 0.1 = 1.9999999 would floor to 1
+
+  let direction: 'ABOVE' | 'BELOW' | 'NEUTRAL' = 'NEUTRAL';
+  let diff = 0;
+  if (pcr > bullish) {
+    direction = 'ABOVE';
+    diff = pcr - bullish;
+  } else if (pcr < bearish) {
+    direction = 'BELOW';
+    diff = bearish - pcr;
+  }
   const pcrLots = Math.floor(Number((diff / step).toFixed(6)));
   return {
-    direction:
-      pcr > start
-        ? ('ABOVE' as const)
-        : pcr < start
-          ? ('BELOW' as const)
-          : ('AT' as const),
+    direction,
     pcrLots,
     lotsPerTrade,
     targetLots: pcrLots * lotsPerTrade,
@@ -293,20 +325,26 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     nextRequired: Set<string>,
   ): Promise<PcrSnapshot> {
     // --- PCR from the full option chain ---
-    const chain = await this.instruments.find({
+    // --- PCR from the option chain (full, or N strikes around the underlying) ---
+    const fullChain = await this.instruments.find({
       exchange: cfg.pcrExchange,
       symbol: cfg.contractName,
       instrument: pcrOptionInstrument(cfg.pcrExchange),
       expiry: cfg.pcrExpiry,
     });
-    chain.forEach((r) => nextRequired.add(keyOf(r)));
 
+    // underlying first, because the strike window depends on its LTP
     const und = await this.resolveUnderlying(cfg);
     let undLtp: number | null = null;
     if (und) {
       nextRequired.add(keyOf(und));
       undLtp = this.ticks.get(keyOf(und))?.lp ?? null;
     }
+
+    const n = cfg.strikesAroundAtm ?? 0; // 0 or missing = all strikes (old behaviour)
+    const chain =
+      n > 0 ? this.pickStrikeWindow(fullChain, undLtp, n) : fullChain;
+    chain.forEach((r) => nextRequired.add(keyOf(r)));
 
     let callOi = 0,
       putOi = 0,
@@ -322,13 +360,22 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     const pcr = callOi > 0 ? Number((putOi / callOi).toFixed(4)) : null;
 
     // --- lots ---
+    // const lots = computeLots(
+    //   pcr,
+    //   cfg.pcrStartLevel ?? 1,
+    //   cfg.pcrStep ?? 0.1,
+    //   cfg.lotsPerTrade,
+    // );
+
+    const bull = cfg.pcrBullishStartLevel ?? 1.2; // ?? covers old Mongo docs
+    const bear = cfg.pcrBearishStartLevel ?? 0.8;
     const lots = computeLots(
       pcr,
-      cfg.pcrStartLevel ?? 1,
+      bear,
+      bull,
       cfg.pcrStep ?? 0.1,
       cfg.lotsPerTrade,
     );
-
     // --- contract to trade + matching open positions ---
     const universe = await this.getTradeUniverse(cfg);
     const openPositions = this.mapPositions(universe, pos.rows).filter(
@@ -376,7 +423,10 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
       totalCallOi: callOi,
       totalPutOi: putOi,
       pcr,
-      pcrStartLevel: cfg.pcrStartLevel ?? 1,
+      // pcrStartLevel: cfg.pcrStartLevel ?? 1,
+      // in the returned object, replace pcrStartLevel with:
+      pcrBullishStartLevel: bull,
+      pcrBearishStartLevel: bear,
       pcrStep: cfg.pcrStep ?? 0.1,
       lots,
       optionType: pick.optType,
@@ -491,5 +541,35 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
       await fs.remove(path.join(this.DATA_DIR, f));
       this.logger.log(`Removed orphan PCR snapshot: ${f}`);
     }
+  }
+
+  // finding strikes around atm
+  /** N strikes below + ATM + N strikes above, for both CE and PE */
+  private pickStrikeWindow(
+    chain: PcrInstrument[],
+    ltp: number | null,
+    n: number,
+  ): PcrInstrument[] {
+    if (ltp == null) return []; // underlying not ticking yet
+    const strikes = [
+      ...new Set(
+        chain
+          .map((r) => Number(r.strikePrice))
+          .filter((s) => Number.isFinite(s)),
+      ),
+    ].sort((a, b) => a - b);
+    if (!strikes.length) return [];
+
+    let atm = 0;
+    let best = Infinity;
+    strikes.forEach((s, i) => {
+      const d = Math.abs(s - ltp);
+      if (d < best) {
+        best = d;
+        atm = i;
+      }
+    });
+    const keep = new Set(strikes.slice(Math.max(0, atm - n), atm + n + 1));
+    return chain.filter((r) => keep.has(Number(r.strikePrice)));
   }
 }

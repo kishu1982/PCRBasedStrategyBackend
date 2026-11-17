@@ -165,6 +165,10 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
       };
     };
 
+    // skip if snapshot in inactive
+    const fresh = await this.configService.findById(String(c.id));
+    if (fresh.status !== 'ACTIVE') return skip('Config is INACTIVE');
+
     const snap = await this.calc.readSnapshot(c);
     if (!snap) return skip('No snapshot yet');
     if (!snap.strategyActive) return skip('Strategy inactive in snapshot');
@@ -355,6 +359,112 @@ export class PcrExecutionService implements OnModuleInit, OnModuleDestroy {
     } catch (e: any) {
       this.logger.error(`PCR cancel pending failed: ${e?.message}`);
       return false;
+    }
+  }
+  async killNow(
+    id: string,
+  ): Promise<PcrExecutionResult & { configStatus: string }> {
+    // 1) INACTIVE first, so scan() can't open anything new
+    const c = await this.configService.setStatus(id, 'INACTIVE');
+    const configStatus = 'INACTIVE';
+
+    // 2) let any in-flight rebalance finish (max ~5s)
+    for (let i = 0; i < 20 && this.busy.has(id); i++)
+      await new Promise((r) => setTimeout(r, 250));
+    if (this.busy.has(id))
+      return {
+        status: 'FAILED',
+        reason: 'Rebalance still running. Config is INACTIVE, call kill again',
+        orders: [],
+        configStatus,
+      };
+
+    this.busy.add(id);
+    try {
+      const executionEnabled = this.env.get('PCR_EXECUTION_ENABLED') === 'true';
+
+      // 3) cancel our pending LMT orders so they don't fill after we close
+      if (executionEnabled && !(await this.cancelPendingPcrOrders(c)))
+        return {
+          status: 'FAILED',
+          reason: 'Could not cancel pending orders',
+          orders: [],
+          configStatus,
+        };
+
+      // 4) live broker positions on this config's trade universe
+      const live = await this.calc.fetchNetPositions();
+      if (!live.ok)
+        return {
+          status: 'FAILED',
+          reason: 'Net positions unavailable',
+          orders: [],
+          configStatus,
+        };
+
+      const universe = await this.calc.getTradeUniverse(c);
+      const plan: PlannedOrder[] = this.calc
+        .mapPositions(universe, live.rows)
+        .filter((p) => p.netQty !== 0)
+        .map((p) => ({
+          exchange: p.exchange,
+          token: p.token,
+          tradingSymbol: p.tradingSymbol,
+          side: p.netQty > 0 ? ('S' as const) : ('B' as const),
+          quantity: Math.abs(p.netQty),
+          reason: 'KILL: close position',
+        }));
+
+      const info: any = { at: new Date().toISOString(), kill: true, plan };
+      if (!plan.length) {
+        this.calc.recordExecution(id, { ...info, status: 'NOOP' });
+        return {
+          status: 'NOOP',
+          reason: 'No open positions',
+          orders: [],
+          configStatus,
+        };
+      }
+      if (!executionEnabled) {
+        this.calc.recordExecution(id, { ...info, status: 'DRY_RUN' });
+        return { status: 'DRY_RUN', orders: plan, configStatus };
+      }
+
+      // 5) close everything; unlike rebalance, keep going if one leg fails
+      const results: any[] = [];
+      for (const o of plan) {
+        try {
+          const price = await this.getLimitPrice(o.exchange, o.token, o.side);
+          if (price == null) throw new Error('Limit price unavailable');
+          const r: any = await this.orders.placeOrder({
+            buy_or_sell: o.side,
+            product_type: c.productType ?? 'M',
+            exchange: o.exchange,
+            tradingsymbol: o.tradingSymbol,
+            quantity: o.quantity,
+            price_type: 'LMT',
+            price,
+            trigger_price: 0,
+            discloseqty: 0,
+            retention: 'DAY',
+            amo: 'NO',
+            remarks: `PCR_${c.contractName}`, // same remark so the cancel step finds it
+          } as PlaceOrderDto);
+          if (!r || r.stat !== 'Ok')
+            throw new Error(r?.emsg ?? 'Order rejected');
+          results.push({ ...o, price, ok: true, orderNo: r?.norenordno });
+        } catch (e: any) {
+          results.push({ ...o, ok: false, error: e?.message });
+          this.logger.error(
+            `PCR kill order failed ${o.tradingSymbol}: ${e?.message}`,
+          );
+        }
+      }
+      const status = results.every((r) => r.ok) ? 'EXECUTED' : 'FAILED';
+      this.calc.recordExecution(id, { ...info, status, results });
+      return { status, orders: results, configStatus };
+    } finally {
+      this.busy.delete(id);
     }
   }
 }

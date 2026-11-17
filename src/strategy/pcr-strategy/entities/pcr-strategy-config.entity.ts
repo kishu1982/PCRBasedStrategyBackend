@@ -25,7 +25,9 @@ export class PcrStrategyConfigEntity {
   @Column() timeframeMinutes: number;
   @Column() lotsPerTrade: number;
   @Column() status: string; // ACTIVE | INACTIVE
-  @Column() pcrStartLevel: number; // default 1
+  // @Column() pcrStartLevel: number; // default 1
+  @Column() pcrBullishStartLevel: number; // default 1.2
+  @Column() pcrBearishStartLevel: number; // default 0.8
   @Column() side: string; // BUY | SELL
 
   // optional extras
@@ -33,6 +35,7 @@ export class PcrStrategyConfigEntity {
   @Column() productType: string; // default 'M'
   @Column() underlyingExchange?: string; // e.g. NSE
   @Column() underlyingToken?: string; // e.g. 26000
+  @Column() strikesAroundAtm: number; // 0 = all
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;

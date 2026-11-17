@@ -62,4 +62,7 @@ export class PcrStrategyController {
   @Post('config/:id/execute') execute(@Param('id') id: string) {
     return this.exec.runNow(id);
   }
+  @Post('config/:id/kill') kill(@Param('id') id: string) {
+    return this.exec.killNow(id);
+  }
 }

@@ -37,10 +37,12 @@ export interface PcrSnapshot {
   totalCallOi: number;
   totalPutOi: number;
   pcr: number | null;
-  pcrStartLevel: number;
+  // pcrStartLevel: number;
+  pcrBullishStartLevel: number;
+  pcrBearishStartLevel: number;
   pcrStep: number;
   lots: {
-    direction: 'ABOVE' | 'BELOW' | 'AT' | 'NA';
+    direction: 'ABOVE' | 'BELOW' | 'NEUTRAL' | 'NA';
     pcrLots: number;
     lotsPerTrade: number;
     targetLots: number;

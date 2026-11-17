@@ -66,10 +66,16 @@ export class PcrStrategyConfigService {
 
   async create(dto: CreatePcrStrategyConfigDto) {
     const data = this.normalize(dto);
+    this.assertBand(
+      data.pcrBearishStartLevel ?? 0.8,
+      data.pcrBullishStartLevel ?? 1.2,
+    );
     await this.assertNoDuplicate(data.contractName, data.pcrExpiry);
     try {
       const entity = this.repo.create({
-        pcrStartLevel: 1,
+        // pcrStartLevel: 1,
+        pcrBullishStartLevel: 1.2,
+        pcrBearishStartLevel: 0.8,
         pcrStep: 0.1,
         productType: 'M',
         status: 'INACTIVE', // safe default
@@ -86,6 +92,12 @@ export class PcrStrategyConfigService {
         'Failed to save PCR configuration',
       );
     }
+  }
+  private assertBand(bear: number, bull: number) {
+    if (!(bear < bull))
+      throw new BadRequestException(
+        'Bearish start level must be lower than bullish start level',
+      );
   }
 
   findAll() {
@@ -105,6 +117,10 @@ export class PcrStrategyConfigService {
   async update(id: string, dto: UpdatePcrStrategyConfigDto) {
     const existing = await this.findById(id);
     const data = this.normalize(dto);
+    this.assertBand(
+      data.pcrBearishStartLevel ?? existing.pcrBearishStartLevel ?? 0.8,
+      data.pcrBullishStartLevel ?? existing.pcrBullishStartLevel ?? 1.2,
+    );
     const name = data.contractName ?? existing.contractName;
     const expiry = data.pcrExpiry ?? existing.pcrExpiry;
     if (name !== existing.contractName || expiry !== existing.pcrExpiry) {
