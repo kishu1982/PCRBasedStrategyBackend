@@ -33,7 +33,13 @@ export interface PcrSnapshot {
   strategyActive: boolean;
   side: string;
   timeframeMinutes: number;
-  underlying: { exchange: string; token: string; ltp: number | null } | null;
+  underlying: {
+    exchange: string;
+    token: string;
+    ltp: number | null;
+    spotLtp?: number | null;
+    source?: 'SPOT' | 'SYNTHETIC';
+  } | null;
   totalCallOi: number;
   totalPutOi: number;
   pcr: number | null;

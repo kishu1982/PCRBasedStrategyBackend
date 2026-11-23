@@ -334,11 +334,35 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     });
 
     // underlying first, because the strike window depends on its LTP
+    // const und = await this.resolveUnderlying(cfg);
+    // let undLtp: number | null = null;
+    // if (und) {
+    //   nextRequired.add(keyOf(und));
+    //   undLtp = this.ticks.get(keyOf(und))?.lp ?? null;
+    // }
+
+    // now use synthetic underlying (from the option chain) if the real underlying is not available
+    // underlying first, because the strike window depends on its LTP
     const und = await this.resolveUnderlying(cfg);
+    let spotLtp: number | null = null;
     let undLtp: number | null = null;
+    let undSource: 'SPOT' | 'SYNTHETIC' = 'SPOT';
     if (und) {
-      nextRequired.add(keyOf(und));
-      undLtp = this.ticks.get(keyOf(und))?.lp ?? null;
+      nextRequired.add(keyOf(und)); // spot is still needed to locate ATM
+      spotLtp = this.ticks.get(keyOf(und))?.lp ?? null;
+      undLtp = spotLtp;
+
+      // NSE / BSE index underlying: use synthetic future instead of spot
+      if (
+        (und.exchange === 'NSE' || und.exchange === 'BSE') &&
+        spotLtp != null
+      ) {
+        const syn = this.syntheticUnderlying(fullChain, spotLtp, nextRequired);
+        if (syn != null) {
+          undLtp = syn;
+          undSource = 'SYNTHETIC';
+        } // else: stays on spot until both ATM legs have ticks
+      }
     }
 
     const n = cfg.strikesAroundAtm ?? 0; // 0 or missing = all strikes (old behaviour)
@@ -419,7 +443,10 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
       // side: cfg.side,
       side: isOpt ? cfg.side : pcr != null && pcr >= 1 ? 'BUY' : 'SELL',
       timeframeMinutes: cfg.timeframeMinutes,
-      underlying: und ? { ...und, ltp: undLtp } : null,
+      // underlying: und ? { ...und, ltp: undLtp } : null,
+      underlying: und
+        ? { ...und, ltp: undLtp, spotLtp, source: undSource }
+        : null,
       totalCallOi: callOi,
       totalPutOi: putOi,
       pcr,
@@ -571,5 +598,47 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     });
     const keep = new Set(strikes.slice(Math.max(0, atm - n), atm + n + 1));
     return chain.filter((r) => keep.has(Number(r.strikePrice)));
+  }
+
+  /** Synthetic future = K + CE - PE at the strike nearest to spot (put-call parity). */
+  private syntheticUnderlying(
+    chain: PcrInstrument[],
+    spot: number,
+    nextRequired: Set<string>,
+  ): number | null {
+    const byStrike = new Map<
+      number,
+      { ce?: PcrInstrument; pe?: PcrInstrument }
+    >();
+    for (const r of chain) {
+      const k = Number(r.strikePrice);
+      if (!Number.isFinite(k)) continue;
+      const e = byStrike.get(k) ?? {};
+      if (r.optType === 'CE') e.ce = r;
+      else if (r.optType === 'PE') e.pe = r;
+      byStrike.set(k, e);
+    }
+
+    let best: { k: number; ce: PcrInstrument; pe: PcrInstrument } | null = null;
+    let bestDiff = Infinity;
+    for (const [k, v] of byStrike) {
+      if (!v.ce || !v.pe) continue; // need both legs at the same strike
+      const d = Math.abs(k - spot);
+      if (d < bestDiff) {
+        bestDiff = d;
+        best = { k, ce: v.ce, pe: v.pe };
+      }
+    }
+    if (!best) return null;
+
+    // always subscribe to both ATM legs, even if the strike window doesn't include them yet
+    nextRequired.add(keyOf(best.ce));
+    nextRequired.add(keyOf(best.pe));
+
+    const c = this.ticks.get(keyOf(best.ce))?.lp;
+    const p = this.ticks.get(keyOf(best.pe))?.lp;
+    if (!(c && c > 0) || !(p && p > 0)) return null; // no live price on a leg yet
+
+    return Number((best.k + c - p).toFixed(2));
   }
 }
