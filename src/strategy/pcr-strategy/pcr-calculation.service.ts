@@ -10,7 +10,12 @@ import { OrdersService } from 'src/orders/orders.service'; // adjust
 import { PcrStrategyConfigService } from './pcr-strategy-config.service';
 import { PcrInstrumentService } from './pcr-instrument.service';
 import { PcrStrategyConfigEntity } from './entities/pcr-strategy-config.entity';
-import { PcrInstrument, PcrPosition, PcrSnapshot } from './pcr-strategy.types';
+import {
+  PcrInstrument,
+  PcrPosition,
+  PcrSnapshot,
+  PcrStrikeUsed,
+} from './pcr-strategy.types';
 
 import { ExchangeDataService } from 'src/strategy/exchange-data/exchange-data.service';
 
@@ -469,6 +474,10 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
           ? Number((received / chain.length).toFixed(3))
           : 0,
       },
+      pcrStrikes: {
+        strikesAroundAtm: n,
+        ...this.describeStrikes(chain, undLtp),
+      },
       lastExecution: this.lastExecution.get(String(cfg.id)) ?? null,
       updatedAt: new Date().toISOString(),
     };
@@ -640,5 +649,51 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     if (!(c && c > 0) || !(p && p > 0)) return null; // no live price on a leg yet
 
     return Number((best.k + c - p).toFixed(2));
+  }
+
+  // new helper to list out pcr strikes used in the snapshot
+  /** Lists which CE/PE strikes were used for the PCR sums, with their current OI. */
+  private describeStrikes(
+    chain: PcrInstrument[],
+    undLtp: number | null,
+  ): {
+    atmStrike: number | null;
+    callCount: number;
+    putCount: number;
+    strikes: PcrStrikeUsed[];
+  } {
+    const byStrike = new Map<number, PcrStrikeUsed>();
+    let callCount = 0;
+    let putCount = 0;
+
+    for (const r of chain) {
+      const k = Number(r.strikePrice);
+      if (!Number.isFinite(k)) continue;
+      const row = byStrike.get(k) ?? { strike: k, ce: null, pe: null };
+      const leg = {
+        tradingSymbol: r.tradingSymbol,
+        token: r.token,
+        oi: this.ticks.get(keyOf(r))?.oi ?? null,
+      };
+      if (r.optType === 'CE') {
+        row.ce = leg;
+        callCount++;
+      } else if (r.optType === 'PE') {
+        row.pe = leg;
+        putCount++;
+      }
+      byStrike.set(k, row);
+    }
+
+    const strikes = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+
+    let atmStrike: number | null = null;
+    if (undLtp != null && strikes.length) {
+      atmStrike = strikes.reduce((best, s) =>
+        Math.abs(s.strike - undLtp) < Math.abs(best.strike - undLtp) ? s : best,
+      ).strike;
+    }
+
+    return { atmStrike, callCount, putCount, strikes };
   }
 }

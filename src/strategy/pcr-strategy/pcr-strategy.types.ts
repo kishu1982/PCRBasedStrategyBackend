@@ -60,6 +60,19 @@ export interface PcrSnapshot {
   totalOpenLots: number;
   positionsOk: boolean;
   feed: { totalStrikes: number; received: number; coverage: number };
+  pcrStrikes: {
+    strikesAroundAtm: number; // 0 = all strikes
+    atmStrike: number | null;
+    callCount: number;
+    putCount: number;
+    strikes: PcrStrikeUsed[];
+  };
   lastExecution: any;
   updatedAt: string;
+}
+
+export interface PcrStrikeUsed {
+  strike: number;
+  ce: { tradingSymbol: string; token: string; oi: number | null } | null;
+  pe: { tradingSymbol: string; token: string; oi: number | null } | null;
 }
