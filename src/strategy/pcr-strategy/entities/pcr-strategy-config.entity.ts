@@ -32,6 +32,11 @@ export class PcrStrategyConfigEntity {
 
   // optional extras
   @Column() pcrStep: number; // default 0.1
+  @Column({ nullable: true })
+  pcrBullishStep?: number;
+
+  @Column({ nullable: true })
+  pcrBearishStep?: number;
   @Column() productType: string; // default 'M'
   @Column() underlyingExchange?: string; // e.g. NSE
   @Column() underlyingToken?: string; // e.g. 26000

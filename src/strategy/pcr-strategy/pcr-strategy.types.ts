@@ -46,7 +46,9 @@ export interface PcrSnapshot {
   // pcrStartLevel: number;
   pcrBullishStartLevel: number;
   pcrBearishStartLevel: number;
-  pcrStep: number;
+  // pcrStep: number;
+  pcrBullishStep: number;
+  pcrBearishStep: number;
   lots: {
     direction: 'ABOVE' | 'BELOW' | 'NEUTRAL' | 'NA';
     pcrLots: number;

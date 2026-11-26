@@ -60,11 +60,48 @@ interface PcrNetRow {
 //     targetLots: pcrLots * lotsPerTrade,
 //   };
 // }
+
+// with only steps common to bullish and bearish, and separate start levels for each
+// export function computeLots(
+//   pcr: number | null,
+//   bearish: number,
+//   bullish: number,
+//   step: number,
+//   lotsPerTrade: number,
+// ) {
+//   if (pcr == null)
+//     return {
+//       direction: 'NA' as const,
+//       pcrLots: 0,
+//       lotsPerTrade,
+//       targetLots: 0,
+//     };
+
+//   let direction: 'ABOVE' | 'BELOW' | 'NEUTRAL' = 'NEUTRAL';
+//   let diff = 0;
+//   if (pcr > bullish) {
+//     direction = 'ABOVE';
+//     diff = pcr - bullish;
+//   } else if (pcr < bearish) {
+//     direction = 'BELOW';
+//     diff = bearish - pcr;
+//   }
+//   const pcrLots = Math.floor(Number((diff / step).toFixed(6)));
+//   return {
+//     direction,
+//     pcrLots,
+//     lotsPerTrade,
+//     targetLots: pcrLots * lotsPerTrade,
+//   };
+// }
+
+// calcualte lots with steps indivisually for bullish and bearish
 export function computeLots(
   pcr: number | null,
   bearish: number,
   bullish: number,
-  step: number,
+  bullStep: number,
+  bearStep: number,
   lotsPerTrade: number,
 ) {
   if (pcr == null)
@@ -77,14 +114,17 @@ export function computeLots(
 
   let direction: 'ABOVE' | 'BELOW' | 'NEUTRAL' = 'NEUTRAL';
   let diff = 0;
+  let step = bullStep;
   if (pcr > bullish) {
     direction = 'ABOVE';
     diff = pcr - bullish;
+    step = bullStep;
   } else if (pcr < bearish) {
     direction = 'BELOW';
     diff = bearish - pcr;
+    step = bearStep;
   }
-  const pcrLots = Math.floor(Number((diff / step).toFixed(6)));
+  const pcrLots = step > 0 ? Math.floor(Number((diff / step).toFixed(6))) : 0; // guard against a 0 step
   return {
     direction,
     pcrLots,
@@ -396,13 +436,26 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
     //   cfg.lotsPerTrade,
     // );
 
+    // const bull = cfg.pcrBullishStartLevel ?? 1.2; // ?? covers old Mongo docs
+    // const bear = cfg.pcrBearishStartLevel ?? 0.8;
+    // const lots = computeLots(
+    //   pcr,
+    //   bear,
+    //   bull,
+    //   cfg.pcrStep ?? 0.1,
+    //   cfg.lotsPerTrade,
+    // );
+
     const bull = cfg.pcrBullishStartLevel ?? 1.2; // ?? covers old Mongo docs
     const bear = cfg.pcrBearishStartLevel ?? 0.8;
+    const bullStep = cfg.pcrBullishStep ?? cfg.pcrStep ?? 0.1; // falls back to the old single step
+    const bearStep = cfg.pcrBearishStep ?? cfg.pcrStep ?? 0.1;
     const lots = computeLots(
       pcr,
       bear,
       bull,
-      cfg.pcrStep ?? 0.1,
+      bullStep,
+      bearStep,
       cfg.lotsPerTrade,
     );
     // --- contract to trade + matching open positions ---
@@ -459,7 +512,9 @@ export class PcrCalculationService implements OnModuleInit, OnModuleDestroy {
       // in the returned object, replace pcrStartLevel with:
       pcrBullishStartLevel: bull,
       pcrBearishStartLevel: bear,
-      pcrStep: cfg.pcrStep ?? 0.1,
+      // pcrStep: cfg.pcrStep ?? 0.1,
+      pcrBullishStep: bullStep,
+      pcrBearishStep: bearStep,
       lots,
       optionType: pick.optType,
       contractToTrade: pick.contract,

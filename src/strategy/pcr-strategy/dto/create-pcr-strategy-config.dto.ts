@@ -8,6 +8,7 @@ import {
   IsString,
   Matches,
   Min,
+  IsPositive,
 } from 'class-validator';
 
 const upper = ({ value }: { value: any }) =>
@@ -43,6 +44,15 @@ export class CreatePcrStrategyConfigDto {
   @Transform(upper) @IsIn(['BUY', 'SELL']) side: string;
 
   @IsOptional() @IsNumber() @Min(0.01) pcrStep?: number;
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  pcrBullishStep?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  pcrBearishStep?: number;
   @IsOptional() @Transform(upper) @IsIn(['C', 'M', 'H']) productType?: string;
   @IsOptional()
   @Transform(upper)

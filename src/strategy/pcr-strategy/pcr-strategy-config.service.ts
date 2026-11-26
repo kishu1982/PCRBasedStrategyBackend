@@ -74,9 +74,11 @@ export class PcrStrategyConfigService {
     try {
       const entity = this.repo.create({
         // pcrStartLevel: 1,
-        pcrBullishStartLevel: 1.2,
-        pcrBearishStartLevel: 0.8,
-        pcrStep: 0.1,
+        pcrBullishStartLevel: 1.1,
+        pcrBearishStartLevel: 0.9,
+        // pcrStep: 0.1,
+        pcrBullishStep: 0.1,
+        pcrBearishStep: 0.1,
         productType: 'M',
         status: 'INACTIVE', // safe default
         ...data,
